@@ -7,8 +7,8 @@ from io import BytesIO
 # ====================================================================
 # *** ACTION REQUIRED: FILE PATHS ***
 # Define the paths for your two files.
-SALES_2024_PATH = "safa 24.Xlsx" 
-SALES_2025_PATH = "safa 25.Xlsx"
+SALES_2024_PATH = "shams 24(2).Xlsx" 
+SALES_2025_PATH = "shams 25.Xlsx"
 # ====================================================================
 
 # --- Configuration (MUST BE THE FIRST STREAMLIT COMMAND) ---
