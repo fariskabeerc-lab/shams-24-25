@@ -2,69 +2,119 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import os 
+import re 
 from io import BytesIO
 
 # ====================================================================
-# *** ACTION REQUIRED: FILE PATHS ***
+# ⚠️ ACTION REQUIRED: SET YOUR FILE PATHS HERE ⚠️
 # Define the paths for your two files.
 SALES_2024_PATH = "shams 24(2).Xlsx" 
-SALES_2025_PATH = "shams 25.Xlsx"
+SALES_2025_PATH = "shams 25.Xlsx" 
 # ====================================================================
 
 # --- Configuration (MUST BE THE FIRST STREAMLIT COMMAND) ---
-st.set_page_config(page_title="Year-over-Year Sales Comparison", layout="wide")
-st.title("🔄 Year-over-Year Item Sales Analysis (2024 vs 2025)")
-st.caption("This report identifies items that were lost, gained, and retained between the two periods, filtered by Category.")
+st.set_page_config(page_title="Year-over-Year Sales Analysis", layout="wide")
+st.title("📈 Year-over-Year Item Sales Analysis (2024 vs 2025)")
+st.caption("This report compares item performance, identifying **Lost**, **New**, and **Retained** items, along with sales and quantity changes.")
 
+# Helper function for aggressive Item Code cleaning
+def clean_item_code(code_series):
+    """Aggressively cleans the Item Code for consistent matching."""
+    if code_series.empty:
+        return code_series
+    # Convert to string, strip spaces, convert to uppercase, remove non-alphanumeric chars
+    code_series = code_series.astype(str).str.strip().str.upper()
+    code_series = code_series.str.replace(r'[^A-Z0-9]', '', regex=True)
+    return code_series
+
+# New helper function for aggressive Sales column cleaning
+def clean_sales_column(sales_series):
+    """Aggressively cleans sales column by removing formatting and ensuring numeric type."""
+    # Convert to string, strip spaces
+    sales_series = sales_series.astype(str).str.strip()
+    
+    # Remove common non-numeric characters that interfere with pd.to_numeric
+    # Specifically removing commas (thousands separator) and common currency symbols
+    sales_series = sales_series.str.replace(r'[^\d\.\-]', '', regex=True)
+    
+    # Convert to numeric, coerce errors to NaN, fill NaN with 0, then cast to float
+    cleaned_sales = pd.to_numeric(sales_series, errors='coerce').fillna(0).astype(float)
+    return cleaned_sales
 
 # --- Load and Prepare Data ---
 @st.cache_data(show_spinner="Loading and comparing item data...")
 def load_and_compare_data(path_2024, path_2025):
-    """Loads two files and performs set comparison on Item Code."""
+    """
+    Loads two files, renames columns to a standard format, and performs set comparison on Item Code.
+    """
     
-    # 1. Load 2024 Data
+    # --- 1. Load 2024 Data ---
     if not os.path.exists(path_2024):
         st.error(f"2024 Sales file not found at: {path_2024}")
         return None, None
     try:
         df_2024 = pd.read_excel(path_2024, engine='openpyxl')
-        df_2024.rename(columns={'Item Code': 'Item_Code', 'Items': 'Item_Name', 'Qty Sold': 'Qty_Sold'}, inplace=True)
+        df_2024.rename(columns={
+            'Item Code': 'Item_Code', 
+            'Items': 'Item_Name', 
+            'Qty Sold': 'Qty_Sold',
+            'Total Sales': 'Total_Sales',
+            'Category': 'Category' 
+        }, inplace=True)
+        if 'Category' not in df_2024.columns:
+             df_2024['Category'] = 'Uncategorized (2024 Missing)'
     except Exception as e:
         st.error(f"Error reading 2024 Sales file: {e}")
         return None, None
 
-    # 2. Load 2025 Data (Contains Category)
+    # --- 2. Load 2025 Data ---
     if not os.path.exists(path_2025):
         st.error(f"2025 Sales file not found at: {path_2025}")
         return None, None
     try:
         df_2025 = pd.read_excel(path_2025, engine='openpyxl')
-        df_2025.rename(columns={'Item Code': 'Item_Code', 'Items': 'Item_Name', 'Category': 'Category'}, inplace=True)
-        # Note: 2025 data might not have a 'Qty Sold' column explicitly, let's look for a similar metric or assume 'Qty Sold' based on common practice. 
-        # For simplicity, we assume Qty Sold is present or can be proxied. Using 'Total Sales' as a fallback if 'Qty Sold' is missing.
-        if 'Qty Sold' in df_2025.columns:
-            df_2025.rename(columns={'Qty Sold': 'Qty_Sold'}, inplace=True)
-        else:
-            # Create a placeholder column if Qty Sold is missing in 2025
-            df_2025['Qty_Sold'] = df_2025['Total Sales'] / 10 # Placeholder quantity based on Sales
+        df_2025.rename(columns={
+            'Item Code': 'Item_Code', 
+            'Items': 'Item_Name', 
+            'Qty Sold': 'Qty_Sold', 
+            'Category': 'Category',
+            'Total Sales': 'Total_Sales'
+        }, inplace=True)
+        if 'Category4' in df_2025.columns and 'Category' not in df_2025.columns:
+            df_2025.rename(columns={'Category4': 'Category'}, inplace=True)
             
     except Exception as e:
         st.error(f"Error reading 2025 Sales file: {e}")
         return None, None
 
-    # --- Data Cleaning and Set Extraction ---
-    df_2024['Item_Code'] = df_2024['Item_Code'].astype(str).str.strip()
-    df_2025['Item_Code'] = df_2025['Item_Code'].astype(str).str.strip()
+    # --- Data Cleaning and Validation ---
+    
+    # 1. AGGRESSIVE Item Code CLEANUP
+    df_2024['Item_Code'] = clean_item_code(df_2024['Item_Code'])
+    df_2025['Item_Code'] = clean_item_code(df_2025['Item_Code'])
+    
+    df_2024.dropna(subset=['Item_Code'], inplace=True)
+    df_2025.dropna(subset=['Item_Code'], inplace=True)
+    
+    # 2. AGGRESSIVE SALES AND QTY CLEANUP (NEW STEP)
+    for df_temp in [df_2024, df_2025]:
+        # Clean Sales Column
+        if 'Total_Sales' in df_temp.columns:
+            df_temp['Total_Sales'] = clean_sales_column(df_temp['Total_Sales'])
+        
+        # Ensure Qty Sold is numeric (less aggressive cleaning needed here, usually just float conversion)
+        if 'Qty_Sold' in df_temp.columns:
+            df_temp['Qty_Sold'] = pd.to_numeric(df_temp['Qty_Sold'], errors='coerce').fillna(0).astype(float)
+
+
+    # Other Cleanups
     df_2024['Item_Name'].fillna('Unknown Item', inplace=True)
     df_2025['Item_Name'].fillna('Unknown Item', inplace=True)
-    df_2025['Category'].fillna('Uncategorized', inplace=True)
+    df_2024['Category'].fillna('Uncategorized (Missing)', inplace=True) 
+    df_2025['Category'].fillna('Uncategorized (Missing)', inplace=True) 
     
-    # Ensure sales and quantity columns are numeric
-    for df_temp in [df_2024, df_2025]:
-        for col in ['Total Sales', 'Qty_Sold']:
-            if col in df_temp.columns:
-                df_temp[col] = pd.to_numeric(df_temp[col], errors='coerce').fillna(0)
 
+    # 3. Create Item Code Sets for comparison
     codes_2024 = set(df_2024['Item_Code'].unique())
     codes_2025 = set(df_2025['Item_Code'].unique())
 
@@ -73,55 +123,59 @@ def load_and_compare_data(path_2024, path_2025):
     new_codes = list(codes_2025 - codes_2024)
     retained_codes = list(codes_2024.intersection(codes_2025))
 
-    # --- Category Lookup for LOST/RETAINED items (using 2025 data as source) ---
-    category_lookup = df_2025[['Item_Code', 'Category']].drop_duplicates()
+    # --- Category Lookup from 2024 for Lost Items ---
+    category_lookup_2024 = df_2024[['Item_Code', 'Category']].drop_duplicates(subset=['Item_Code'])
     
     
-    # 1. LOST items (from 2024) - Get 2024 sales and 2025 category lookup
-    df_lost_base = df_2024[df_2024['Item_Code'].isin(lost_codes)].groupby(['Item_Code', 'Item_Name']).agg(
-        Total_Sales=('Total Sales', 'sum'),
+    # 1. LOST items (from 2024)
+    df_lost_base = df_2024[df_2024['Item_Code'].isin(lost_codes)].groupby(['Item_Code']).agg(
+        Item_Name=('Item_Name', 'first'), 
+        Total_Sales=('Total_Sales', 'sum'),
         Total_Qty=('Qty_Sold', 'sum')
     ).reset_index()
-    df_lost = pd.merge(df_lost_base, category_lookup, on='Item_Code', how='left').fillna({'Category': 'Category Lost/Unknown'})
+    
+    df_lost = pd.merge(df_lost_base, category_lookup_2024, on='Item_Code', how='left')
 
 
-    # 2. NEW items (in 2025) - Get 2025 sales and category
+    # 2. NEW items (in 2025)
     df_new_base = df_2025[df_2025['Item_Code'].isin(new_codes)].groupby(['Item_Code', 'Item_Name', 'Category']).agg(
-        Total_Sales=('Total Sales', 'sum'),
+        Total_Sales=('Total_Sales', 'sum'),
         Total_Qty=('Qty_Sold', 'sum')
     ).reset_index()
     df_new = df_new_base
 
 
-    # 3. RETAINED items (in 2024/2025) - **CRITICAL MERGE/JOIN**
+    # 3. RETAINED items (in 2024/2025)
     
-    # 3a. 2024 Aggregation
-    df_retained_2024 = df_2024[df_2024['Item_Code'].isin(retained_codes)].groupby(['Item_Code']).agg(
-        Item_Name=('Item_Name', 'first'),
-        Total_Sales_2024=('Total Sales', 'sum'),
+    # 2024 Aggregation 
+    temp_df_2024_agg = df_2024[df_2024['Item_Code'].isin(retained_codes)].groupby(['Item_Code']).agg(
+        Total_Sales_2024=('Total_Sales', 'sum'), 
         Total_Qty_2024=('Qty_Sold', 'sum')
     ).reset_index()
     
-    # 3b. 2025 Aggregation
-    df_retained_2025 = df_2025[df_2025['Item_Code'].isin(retained_codes)].groupby('Item_Code').agg(
-        Total_Sales_2025=('Total Sales', 'sum'),
+    # 2025 Aggregation (and Category pull)
+    temp_df_2025_agg = df_2025[df_2025['Item_Code'].isin(retained_codes)].groupby('Item_Code').agg(
+        Total_Sales_2025=('Total_Sales', 'sum'), 
         Total_Qty_2025=('Qty_Sold', 'sum'),
         Category=('Category', 'first')
     ).reset_index()
 
-    # 3c. Final Merge (Inner join to ensure both years are present)
+    # Final variables assigned correctly
+    df_retained_2024 = temp_df_2024_agg 
+    df_retained_2025 = temp_df_2025_agg 
+
+    # Final Merge 
     df_retained = pd.merge(df_retained_2024, df_retained_2025, on='Item_Code', how='inner')
     
-    # Add Item Name and Category from 2025 to the final retained table
-    df_name_cat_lookup = df_2025[['Item_Code', 'Item_Name', 'Category']].drop_duplicates(subset=['Item_Code'])
-    df_retained = pd.merge(df_retained.drop(columns=['Item_Name', 'Category']), df_name_cat_lookup, on='Item_Code', how='left').fillna({'Category': 'Category Retained/Unknown'})
+    # Get Item Name (using 2025 name is generally safer for consistency)
+    df_name_lookup = df_2025[['Item_Code', 'Item_Name']].drop_duplicates(subset=['Item_Code'])
+    df_retained = pd.merge(df_retained, df_name_lookup, on='Item_Code', how='left')
 
     # Calculate YOY Differences for Retained Items
     df_retained['Sales_Change_AED'] = df_retained['Total_Sales_2025'] - df_retained['Total_Sales_2024']
     df_retained['Sales_Change_%'] = np.where(
         df_retained['Total_Sales_2024'] > 0,
         (df_retained['Sales_Change_AED'] / df_retained['Total_Sales_2024']) * 100,
-        # Handle division by zero: if 2024 sales were 0, set to 100% or 0% based on 2025 sales
         np.where(df_retained['Total_Sales_2025'] > 0, 100.0, 0.0)
     )
     
@@ -135,121 +189,161 @@ if df_lost is None:
 
 
 # ---------------------------
-# Sidebar Filters
+## Sidebar Filters
 # ---------------------------
 st.sidebar.header("Filter Results")
 
-# Get all unique categories from the two relevant resulting DFs
+# --- 1. Category Filter (Standard Select Box Filter) ---
 all_categories = pd.concat([df_new['Category'], df_retained['Category'], df_lost['Category']]).unique()
+all_categories = [c for c in all_categories if pd.notna(c)] 
 all_categories.sort()
 
-selected_categories = st.sidebar.multiselect(
-    "Filter by Category (2025 Categories Used)",
-    options=all_categories,
-    default=all_categories
+selected_category = st.sidebar.selectbox(
+    "1. Filter by Category",
+    options=["-- ALL --"] + list(all_categories),
+    index=0 
 )
 
 # --- Apply Filters ---
-filtered_lost = df_lost[df_lost['Category'].isin(selected_categories)]
-filtered_new = df_new[df_new['Category'].isin(selected_categories)]
-filtered_retained = df_retained[df_retained['Category'].isin(selected_categories)]
+if selected_category == "-- ALL --":
+    category_filter_list = all_categories
+else:
+    category_filter_list = [selected_category] 
 
+# Apply Category Filter
+filtered_lost = df_lost[df_lost['Category'].isin(category_filter_list)]
+filtered_new = df_new[df_new['Category'].isin(category_filter_list)]
+filtered_retained = df_retained[df_retained['Category'].isin(category_filter_list)] 
+
+filtered_total_lost = filtered_lost 
+total_lost = len(filtered_total_lost)
+total_new = len(filtered_new)
+total_retained = len(filtered_retained)
+total_sales_lost_value = filtered_total_lost['Total_Sales'].sum()
 
 # ---------------------------
-# Dashboard Presentation
+## Dashboard Presentation
 # ---------------------------
 st.markdown("---")
 
-total_lost = len(filtered_lost)
-total_new = len(filtered_new)
-total_retained = len(filtered_retained)
-
 # KPIs based on filtered data
-col1, col2, col3 = st.columns(3)
+st.subheader("High-Level Insights (Filtered Data)")
+col1, col2, col3, col4 = st.columns(4)
 
-col1.metric("Items Retained (Active in both years)", f"{total_retained:,}")
-col2.metric("Items Lost (Not Selling in 2025)", f"{total_lost:,}", delta=f"{-total_lost:,}")
+col1.metric("Items Retained", f"{total_retained:,}")
+col2.metric("Total Items Lost (Absence in 2025)", f"{total_lost:,}", delta=f"{-total_lost:,}")
 col3.metric("Items New in 2025", f"{total_new:,}", delta=f"{total_new:,}")
+col4.metric("Total Lost Sales Value (AED)", f"AED {total_sales_lost_value:,.2f}", delta_color="inverse")
 
 st.markdown("---")
 
 # --- Tabbed Results ---
-tab1, tab2, tab3 = st.tabs(["🔴 Items Now Not Selling (LOST)", "🟢 Items That Had Sales Now (NEW)", "🟡 Retained (Active) Items"])
+tab1, tab2, tab3 = st.tabs(["🔴 Lost Items (Focus)", "🟢 Items That Had Sales Now (NEW)", "🟡 Retained (Active) Items"])
 
 # ====================================================================
 # TAB 1: LOST ITEMS
 # ====================================================================
 with tab1:
-    st.header(f"🔴 {total_lost:,} Items Lost (Sold in 2024, Not in 2025)")
-    st.warning("These items require immediate review. Sales volume dropped to zero. Filtered by 2025 Category lookup.")
+    st.header(f"🔴 {total_lost:,} Lost Items (Absence in 2025)")
+    st.error(f"These items contributed **AED {total_sales_lost_value:,.2f}** to 2024 revenue but are now completely **absent in 2025**. This list is sorted by highest lost sales value.")
     
-    if not filtered_lost.empty:
-        df_lost_sorted = filtered_lost.sort_values('Total_Sales', ascending=False)
-        st.subheader("Items ranked by their 2024 Sales Value (Impact of Loss)")
+    if not filtered_total_lost.empty:
+        df_lost_sorted = filtered_total_lost.sort_values('Total_Sales', ascending=False)
+        st.subheader("Lost Items ranked by their 2024 Sales Value")
         
-        st.dataframe(df_lost_sorted[['Item_Code', 'Item_Name', 'Category', 'Total_Qty', 'Total_Sales']].style.format({
-            'Total_Sales': 'AED {:,.2f}',
-            'Total_Qty': '{:,.0f}'
-        }).rename(columns={'Total_Qty': 'Qty Sold (2024)', 'Total_Sales': 'Sales Value (2024)'}), use_container_width=True)
+        display_lost_df = df_lost_sorted[['Item_Code', 'Item_Name', 'Category', 'Total_Qty', 'Total_Sales']].rename(
+            columns={'Total_Qty': 'Qty Sold (2024)', 'Total_Sales': 'Sales Value (2024)'}
+        )
+        st.dataframe(display_lost_df.style.format({
+            'Sales Value (2024)': 'AED {:,.2f}',
+            'Qty Sold (2024)': '{:,.0f}'
+        }), use_container_width=True)
 
     else:
-        st.success("Great news! No items were lost in the selected categories.")
+        st.success("No lost items found in the selected category.")
 
 # ====================================================================
 # TAB 2: NEW ITEMS
 # ====================================================================
 with tab2:
     st.header(f"🟢 {total_new:,} Items New in 2025 (Had Sales Now)")
-    st.success("These are successful launches or reactivations. Analyze their 2025 profitability.")
+    st.success("These are successful launches or reactivations. Analyze their 2025 performance.")
     
     if not filtered_new.empty:
         df_new_sorted = filtered_new.sort_values('Total_Sales', ascending=False)
         st.subheader("Items ranked by their 2025 Sales Value")
 
-        st.dataframe(df_new_sorted[['Item_Code', 'Item_Name', 'Category', 'Total_Qty', 'Total_Sales']].style.format({
-            'Total_Sales': 'AED {:,.2f}',
-            'Total_Qty': '{:,.0f}'
-        }).rename(columns={'Total_Qty': 'Qty Sold (2025)', 'Total_Sales': 'Sales Value (2025)'}), use_container_width=True)
+        display_new_df = df_new_sorted[['Item_Code', 'Item_Name', 'Category', 'Total_Qty', 'Total_Sales']].rename(
+            columns={'Total_Qty': 'Qty Sold (2025)', 'Total_Sales': 'Sales Value (2025)'}
+        )
+        st.dataframe(display_new_df.style.format({
+            'Sales Value (2025)': 'AED {:,.2f}',
+            'Qty Sold (2025)': '{:,.0f}'
+        }), use_container_width=True)
 
     else:
-        st.info("No new items were introduced or reactivated in the selected categories.")
+        st.info("No new items were introduced or reactivated in the selected category.")
 
 # ====================================================================
-# TAB 3: RETAINED ITEMS
+# TAB 3: RETAINED ITEMS (FIXED DISPLAY AND AGGREGATION)
 # ====================================================================
 with tab3:
     st.header(f"🟡 {total_retained:,} Items Retained (Active in both 2024 and 2025)")
-    st.info("These are your core items. Growth/decline analysis below.")
-    
-    if not filtered_retained.empty:
-        
-        st.subheader("Retained Items with Year-over-Year Sales & Quantity Comparison")
+    st.info("Core items. Showing all items in the selected category.")
 
-        display_df = filtered_retained[[
+    # Set the view to show all filtered retained items by default
+    filtered_retained_view = filtered_retained
+    selected_view = "All Retained Items"
+
+    # --- Display Metrics for the Selected View ---
+    total_view_sales_diff = filtered_retained_view['Sales_Change_AED'].sum()
+    total_view_items = len(filtered_retained_view)
+    
+    st.metric(
+        label=f"Total Sales Difference for {selected_view}",
+        value=f"AED {total_view_sales_diff:+,.2f}", 
+        delta=f"Total Items: {total_view_items:,}"
+    )
+    
+    st.markdown("---")
+
+
+    if not filtered_retained_view.empty:
+        
+        # Sort column is set to sales change to give a quick overview of performance
+        sort_column = 'Sales_Change_AED'
+        sort_ascending = False # Sort by biggest growth/decline first
+        
+        st.subheader(f"Items Sorted by Sales Change (AED)")
+
+        display_df = filtered_retained_view[[
             'Item_Code', 'Item_Name', 'Category', 
             'Total_Sales_2024', 'Total_Sales_2025', 
             'Sales_Change_AED', 'Sales_Change_%',
             'Total_Qty_2024', 'Total_Qty_2025'
-        ]].sort_values('Sales_Change_AED', ascending=False)
-
-        st.dataframe(display_df.style.format({
-            'Total_Sales_2024': 'AED {:,.2f}',
-            'Total_Sales_2025': 'AED {:,.2f}',
-            'Sales_Change_AED': 'AED {:+,.2f}', # Plus sign for positive change
-            'Sales_Change_%': '{:+.2f}%',       # Plus sign for positive percentage
-            'Total_Qty_2024': '{:,.0f}',
-            'Total_Qty_2025': '{:,.0f}'
-        }).rename(columns={
+        ]].sort_values(sort_column, ascending=sort_ascending)
+        
+        # Rename columns for display
+        display_df = display_df.rename(columns={
             'Total_Sales_2024': 'Sales Value (2024)',
             'Total_Sales_2025': 'Sales Value (2025)',
-            'Sales_Change_AED': 'Sales Difference (AED)',
+            'Sales_Change_AED': 'Sales Diff. (AED)',
             'Sales_Change_%': 'Sales Change (%)',
             'Total_Qty_2024': 'Qty Sold (2024)',
             'Total_Qty_2025': 'Qty Sold (2025)',
+        })
+
+        st.dataframe(display_df.style.format({
+            'Sales Value (2024)': 'AED {:,.2f}',
+            'Sales Value (2025)': 'AED {:,.2f}',
+            'Sales Diff. (AED)': 'AED {:+,.2f}', 
+            'Sales Change (%)': '{:+.2f}%',       
+            'Qty Sold (2024)': '{:,.0f}',
+            'Qty Sold (2025)': '{:,.0f}'
         }), use_container_width=True)
 
     else:
-        st.info("No items were retained in the selected categories.")
+        st.info("No items match the selected criteria in the chosen category.")
 
 if __name__ == "__main__":
     pass
